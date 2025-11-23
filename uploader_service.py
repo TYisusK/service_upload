@@ -5,7 +5,7 @@ from typing import Optional, Dict
 
 from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
@@ -22,7 +22,7 @@ API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "mindfulpro")
 
 # OneSignal
-ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "4d37d5f3-d9ca-41f5-9db4-b0a9c57125fa")
+ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "")
 
 if not (CLOUD_NAME and API_KEY and API_SECRET):
     raise RuntimeError("Faltan CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en el entorno.")
@@ -50,7 +50,7 @@ app.add_middleware(FrameHeadersMiddleware)
 # ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ajusta en prod
+    allow_origins=["*"],  # ajusta en prod a tu dominio de Flet/Render
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,7 +91,20 @@ threading.Thread(target=janitor, daemon=True).start()
 def health():
     return {"ok": True}
 
-# ---------- Uploader (como ya lo tenías) ----------
+# ---------- Servir los Service Workers en RAÍZ ----------
+SW_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+@app.get("/OneSignalSDKWorker.js", include_in_schema=False)
+def onesignal_sw():
+    path = os.path.join(SW_ROOT, "OneSignalSDKWorker.js")
+    return FileResponse(path, media_type="application/javascript")
+
+@app.get("/OneSignalSDKUpdaterWorker.js", include_in_schema=False)
+def onesignal_sw_updater():
+    path = os.path.join(SW_ROOT, "OneSignalSDKUpdaterWorker.js")
+    return FileResponse(path, media_type="application/javascript")
+
+# ---------- Uploader ----------
 @app.get("/uploader", response_class=HTMLResponse)
 def uploader_form(request: Request, session: str, folder: str = "mindful/profesionistas"):
     touch_session(session)
@@ -139,13 +152,6 @@ def poll(session: str):
 # ---------- NOTIFICACIONES: OneSignal ----------
 @app.get("/notify", response_class=HTMLResponse)
 def notify_page(request: Request, session: str, uid: Optional[str] = None, role: Optional[str] = None):
-    """
-    Página que inicializa OneSignal, pide permiso y registra:
-    - appId: ONESIGNAL_APP_ID
-    - externalId: uid (pasado por query)
-    - tag "role": normal | profesional
-    Marca en sesión 'push_ready'=True cuando termina.
-    """
     if not ONESIGNAL_APP_ID:
         return HTMLResponse("<h3>Falta ONESIGNAL_APP_ID en el servidor.</h3>", status_code=500)
 
