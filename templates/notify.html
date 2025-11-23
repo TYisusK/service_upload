@@ -46,23 +46,16 @@
       OneSignalDeferred.push(async function(OneSignal) {
         try {
           await OneSignal.init({
-            appId: "{{ onesignal_app_id }}",
-            // Puedes añadir aquí serviceWorkerParam si lo necesitas en hosting estático
+            appId: "{{ onesignal_app_id }}"
+            // No hace falta serviceWorkerParam si los .js están en raíz
           });
 
-          // Etiquetas útiles (segmentación)
-          if (role) {
-            await OneSignal.User.addTag("role", role);
-          }
-          // Enlaza el usuario con tu UID (para enviarle directas)
-          if (uid) {
-            await OneSignal.login(uid); // v16: login() establece externalId
-          }
+          if (role) await OneSignal.User.addTag("role", role);
+          if (uid) await OneSignal.login(uid);
 
-          // Pedimos permiso si aún no lo dio
           const perm = await OneSignal.Notifications.requestPermission();
           if (perm === "granted") {
-            out.innerHTML = "✅ Notificaciones activadas. Puedes cerrar esta pestaña.";
+            out.innerHTML = "✅ Notificaciones activadas. Ya puedes cerrar esta pestaña.";
             tellOk();
           } else {
             out.innerHTML = "ℹ️ No se otorgó permiso. Puedes intentarlo de nuevo.";
