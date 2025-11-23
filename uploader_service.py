@@ -22,7 +22,7 @@ API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "mindfulpro")
 
 # OneSignal
-ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "a51b0093-a3d7-4880-abfd-ec162dbbf2a8")
+ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "4d37d5f3-d9ca-41f5-9db4-b0a9c57125fa")
 
 if not (CLOUD_NAME and API_KEY and API_SECRET):
     raise RuntimeError("Faltan CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en el entorno.")
