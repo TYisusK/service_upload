@@ -56,7 +56,6 @@
         if (!data.ok) throw new Error(data.error || "Error al subir");
 
         out.innerHTML = "✅ Subida exitosa. Ya puedes volver a la app.";
-        // Listo: la app Flet hará poll y pondrá la URL.
       } catch (e) {
         out.innerHTML = "<span style='color:#b00'>"+ e + "</span>";
       }
