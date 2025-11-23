@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Activar notificaciones</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue";
+         background:#f6f3ff; margin:0; padding:24px; display:flex; justify-content:center}
+    .card{background:#fff; max-width:520px; width:100%; border-radius:16px; padding:18px 18px 22px;
+          box-shadow:0 12px 40px rgba(0,0,0,.08)}
+    h1{font-size:18px; margin:0 0 8px}
+    .muted{color:#666; font-size:13px; margin-bottom:12px}
+    button{background:#6d5bd0; color:#fff; padding:10px 14px; border:0; border-radius:10px; cursor:pointer}
+    .out{margin-top:14px; font-size:13px; word-break:break-all}
+  </style>
+
+  <!-- OneSignal SDK v16 -->
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+</head>
+<body>
+  <div class="card">
+    <h1>Activar notificaciones</h1>
+    <div class="muted">Da permiso para recibir recordatorios y avisos importantes.</div>
+    <button id="btn">Activar</button>
+    <div class="out" id="out"></div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const session = params.get("session");
+    const uid = params.get("uid") || "";
+    const role = params.get("role") || "";
+
+    const out = document.getElementById("out");
+    const btn = document.getElementById("btn");
+
+    function tellOk() {
+      if (!session) return;
+      fetch(`/notify/ok?session=${encodeURIComponent(session)}`, {method:"POST"});
+    }
+
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    btn.addEventListener("click", () => {
+      out.textContent = "Inicializando OneSignal…";
+      OneSignalDeferred.push(async function(OneSignal) {
+        try {
+          await OneSignal.init({
+            appId: "{{ onesignal_app_id }}",
+            // Puedes añadir aquí serviceWorkerParam si lo necesitas en hosting estático
+          });
+
+          // Etiquetas útiles (segmentación)
+          if (role) {
+            await OneSignal.User.addTag("role", role);
+          }
+          // Enlaza el usuario con tu UID (para enviarle directas)
+          if (uid) {
+            await OneSignal.login(uid); // v16: login() establece externalId
+          }
+
+          // Pedimos permiso si aún no lo dio
+          const perm = await OneSignal.Notifications.requestPermission();
+          if (perm === "granted") {
+            out.innerHTML = "✅ Notificaciones activadas. Puedes cerrar esta pestaña.";
+            tellOk();
+          } else {
+            out.innerHTML = "ℹ️ No se otorgó permiso. Puedes intentarlo de nuevo.";
+          }
+        } catch (e) {
+          console.error(e);
+          out.innerHTML = "<span style='color:#b00'>"+ e + "</span>";
+        }
+      });
+    });
+  </script>
+</body>
+</html>
