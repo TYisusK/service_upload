@@ -1,3 +1,4 @@
+# --- al inicio ---
 import os
 import time
 import threading
@@ -5,7 +6,7 @@ from typing import Optional, Dict
 
 from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
@@ -21,21 +22,16 @@ API_KEY = os.getenv("CLOUDINARY_API_KEY")
 API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "mindfulpro")
 
-# OneSignal
 ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "4d37d5f3-d9ca-41f5-9db4-b0a9c57125fa")
 
 if not (CLOUD_NAME and API_KEY and API_SECRET):
     raise RuntimeError("Faltan CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en el entorno.")
 
-cloudinary.config(
-    cloud_name=CLOUD_NAME,
-    api_key=API_KEY,
-    api_secret=API_SECRET,
-    secure=True,
-)
+cloudinary.config(cloud_name=CLOUD_NAME, api_key=API_KEY, api_secret=API_SECRET, secure=True)
 
 app = FastAPI(title="Mindful Service")
 templates = Jinja2Templates(directory="templates")
+
 
 # ---------- Headers para iframe embebido ----------
 class FrameHeadersMiddleware(BaseHTTPMiddleware):
@@ -50,11 +46,32 @@ app.add_middleware(FrameHeadersMiddleware)
 # ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ajusta en prod a tu dominio de Flet/Render
+    allow_origins=["*"],  # ajusta en prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------- Service Workers de OneSignal en la raíz ----------
+_OS_SW = "importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDKWorker.js');"
+
+@app.get("/OneSignalSDKWorker.js")
+def onesignal_sw_root():
+    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
+
+@app.get("/OneSignalSDKUpdaterWorker.js")
+def onesignal_sw_updater_root():
+    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
+
+# (opcional) si alguna vez quieres servirlos en /sw/ también:
+@app.get("/sw/OneSignalSDKWorker.js")
+def onesignal_sw_subpath():
+    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
+
+@app.get("/sw/OneSignalSDKUpdaterWorker.js")
+def onesignal_sw_updater_subpath():
+    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
+
 
 # ---------- Sesiones en memoria ----------
 _sessions: Dict[str, Dict] = {}
@@ -86,23 +103,12 @@ def janitor():
 
 threading.Thread(target=janitor, daemon=True).start()
 
+
 # ---------- Rutas básicas ----------
 @app.get("/health")
 def health():
     return {"ok": True}
 
-# ---------- Servir los Service Workers en RAÍZ ----------
-SW_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-@app.get("/OneSignalSDKWorker.js", include_in_schema=False)
-def onesignal_sw():
-    path = os.path.join(SW_ROOT, "OneSignalSDKWorker.js")
-    return FileResponse(path, media_type="application/javascript")
-
-@app.get("/OneSignalSDKUpdaterWorker.js", include_in_schema=False)
-def onesignal_sw_updater():
-    path = os.path.join(SW_ROOT, "OneSignalSDKUpdaterWorker.js")
-    return FileResponse(path, media_type="application/javascript")
 
 # ---------- Uploader ----------
 @app.get("/uploader", response_class=HTMLResponse)
@@ -149,13 +155,13 @@ def poll(session: str):
     url = session_get(session, "url")
     return {"ok": True, "url": url}
 
+
 # ---------- NOTIFICACIONES: OneSignal ----------
 @app.get("/notify", response_class=HTMLResponse)
 def notify_page(request: Request, session: str, uid: Optional[str] = None, role: Optional[str] = None):
+    touch_session(session)
     if not ONESIGNAL_APP_ID:
         return HTMLResponse("<h3>Falta ONESIGNAL_APP_ID en el servidor.</h3>", status_code=500)
-
-    touch_session(session)
     return templates.TemplateResponse(
         "notify.html",
         {
