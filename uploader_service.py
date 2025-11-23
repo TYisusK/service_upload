@@ -5,7 +5,7 @@ from typing import Optional, Dict
 
 from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 import cloudinary
 import cloudinary.uploader
 
-# Carga variables de entorno (Render -> Dashboard -> Env Vars)
+# -------- .env ----------
 load_dotenv()
 
 CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
@@ -21,10 +21,11 @@ API_KEY = os.getenv("CLOUDINARY_API_KEY")
 API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "mindfulpro")
 
+# OneSignal
+ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "a51b0093-a3d7-4880-abfd-ec162dbbf2a8")
+
 if not (CLOUD_NAME and API_KEY and API_SECRET):
-    raise RuntimeError(
-        "Faltan CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en el entorno."
-    )
+    raise RuntimeError("Faltan CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en el entorno.")
 
 cloudinary.config(
     cloud_name=CLOUD_NAME,
@@ -33,14 +34,13 @@ cloudinary.config(
     secure=True,
 )
 
-app = FastAPI(title="Mindful Uploader")
+app = FastAPI(title="Mindful Service")
 templates = Jinja2Templates(directory="templates")
 
-# ---------- Permitir embebido en iframe (ajusta a tu dominio en prod) ----------
+# ---------- Headers para iframe embebido ----------
 class FrameHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
-        # En producción, reemplaza '*' por tu dominio de la PWA.
         response.headers["X-Frame-Options"] = "ALLOWALL"
         response.headers["Content-Security-Policy"] = "frame-ancestors *"
         return response
@@ -50,35 +50,35 @@ app.add_middleware(FrameHeadersMiddleware)
 # ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # en prod, limita a tu dominio
+    allow_origins=["*"],  # ajusta en prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- Sesiones en memoria para handoff URL ----------
+# ---------- Sesiones en memoria ----------
 _sessions: Dict[str, Dict] = {}
 _lock = threading.Lock()
 
-def set_session_url(session_id: str, url: str):
+def session_set(session_id: str, key: str, value):
     with _lock:
-        _sessions[session_id] = {"url": url, "ts": time.time()}
+        _sessions.setdefault(session_id, {"ts": time.time()})
+        _sessions[session_id][key] = value
+        _sessions[session_id]["ts"] = time.time()
 
-def get_session_url(session_id: str) -> Optional[str]:
+def session_get(session_id: str, key: str):
     with _lock:
-        item = _sessions.get(session_id)
-        return item.get("url") if item else None
+        return (_sessions.get(session_id) or {}).get(key)
 
 def touch_session(session_id: str):
     with _lock:
-        _sessions.setdefault(session_id, {"url": None, "ts": time.time()})
+        _sessions.setdefault(session_id, {"ts": time.time()})
         _sessions[session_id]["ts"] = time.time()
 
 def janitor():
-    # Limpia sesiones inactivas cada 60s
     while True:
         time.sleep(60)
-        cutoff = time.time() - 60 * 30  # 30 min
+        cutoff = time.time() - 60*30
         with _lock:
             for k in list(_sessions.keys()):
                 if _sessions[k]["ts"] < cutoff:
@@ -86,22 +86,14 @@ def janitor():
 
 threading.Thread(target=janitor, daemon=True).start()
 
-# ---------- Rutas ----------
-@app.get("/", response_class=PlainTextResponse)
-def root():
-    # Render hace HEAD/GET a "/" para detectar el puerto: devolvemos 200 OK
-    return "Mindful Uploader OK"
-
+# ---------- Rutas básicas ----------
 @app.get("/health")
 def health():
     return {"ok": True}
 
+# ---------- Uploader (como ya lo tenías) ----------
 @app.get("/uploader", response_class=HTMLResponse)
 def uploader_form(request: Request, session: str, folder: str = "mindful/profesionistas"):
-    """
-    Página de subida para abrir desde la PWA con ?session=XYZ.
-    Al subir, guarda la URL bajo esa session para que la PWA la obtenga por /poll.
-    """
     touch_session(session)
     return templates.TemplateResponse(
         "upload.html",
@@ -122,9 +114,6 @@ async def upload_image(
     public_id: Optional[str] = Form(default=None),
     overwrite: Optional[bool] = Form(default=True),
 ):
-    """
-    Endpoint JSON para subir imágenes. Si 'session' viene, marca la URL en la sesión.
-    """
     try:
         contents = await file.read()
         res = cloudinary.uploader.upload(
@@ -137,15 +126,47 @@ async def upload_image(
         )
         url = res.get("secure_url")
         if session and url:
-            set_session_url(session, url)
+            session_set(session, "url", url)
         return {"ok": True, "secure_url": url, "public_id": res.get("public_id")}
     except Exception as ex:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(ex)})
 
 @app.get("/poll")
 def poll(session: str):
-    """
-    La PWA consulta periódicamente si ya hay URL para esa sesión.
-    """
-    url = get_session_url(session)
+    url = session_get(session, "url")
     return {"ok": True, "url": url}
+
+# ---------- NOTIFICACIONES: OneSignal ----------
+@app.get("/notify", response_class=HTMLResponse)
+def notify_page(request: Request, session: str, uid: Optional[str] = None, role: Optional[str] = None):
+    """
+    Página que inicializa OneSignal, pide permiso y registra:
+    - appId: ONESIGNAL_APP_ID
+    - externalId: uid (pasado por query)
+    - tag "role": normal | profesional
+    Marca en sesión 'push_ready'=True cuando termina.
+    """
+    if not ONESIGNAL_APP_ID:
+        return HTMLResponse("<h3>Falta ONESIGNAL_APP_ID en el servidor.</h3>", status_code=500)
+
+    touch_session(session)
+    return templates.TemplateResponse(
+        "notify.html",
+        {
+            "request": request,
+            "onesignal_app_id": ONESIGNAL_APP_ID,
+            "session": session,
+            "uid": uid or "",
+            "role": role or "",
+        },
+    )
+
+@app.post("/notify/ok")
+def notify_ok(session: str):
+    session_set(session, "push_ready", True)
+    return {"ok": True}
+
+@app.get("/notify/poll")
+def notify_poll(session: str):
+    ready = bool(session_get(session, "push_ready"))
+    return {"ok": True, "ready": ready}
