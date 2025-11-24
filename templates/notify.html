@@ -4,6 +4,7 @@
   <meta charset="utf-8"/>
   <title>Activar notificaciones</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue";
          background:#f6f3ff; margin:0; padding:24px; display:flex; justify-content:center}
@@ -13,6 +14,7 @@
     .muted{color:#666; font-size:13px; margin-bottom:12px}
     button{background:#6d5bd0; color:#fff; padding:10px 14px; border:0; border-radius:10px; cursor:pointer}
     .out{margin-top:14px; font-size:13px; word-break:break-all}
+    .hint{color:#0b5; font-size:12px}
   </style>
 
   <!-- OneSignal SDK v16 -->
@@ -24,47 +26,85 @@
     <div class="muted">Da permiso para recibir recordatorios y avisos importantes.</div>
     <button id="btn">Activar</button>
     <div class="out" id="out"></div>
+    <div class="hint">Consejo: si Chrome no muestra el cuadro de permiso, ve al candado de la barra de direcciones → Permisos → Notificaciones: “Permitir”.</div>
   </div>
 
   <script>
-    const params = new URLSearchParams(location.search);
-    const session = params.get("session");
-    const uid = params.get("uid") || "";
-    const role = params.get("role") || "";
-
     const out = document.getElementById("out");
     const btn = document.getElementById("btn");
 
     function tellOk() {
+      const params = new URLSearchParams(location.search);
+      const session = params.get("session");
       if (!session) return;
-      fetch(`/notify/ok?session=${encodeURIComponent(session)}`, {method:"POST"});
+      fetch(`/notify/ok?session=${encodeURIComponent(session)}`, { method:"POST" });
     }
 
-    window.OneSignalDeferred = window.OneSignalDeferred || [];
-    btn.addEventListener("click", () => {
-      out.textContent = "Inicializando OneSignal…";
-      OneSignalDeferred.push(async function(OneSignal) {
-        try {
-          await OneSignal.init({
-            appId: "{{ onesignal_app_id }}"
-            // No hace falta serviceWorkerParam si los .js están en raíz
-          });
+    // util pequeño para imprimir
+    function log(msg, isErr=false){
+      out.innerHTML = (isErr ? "<span style='color:#b00'>" : "") + msg + (isErr ? "</span>" : "");
+    }
 
-          if (role) await OneSignal.User.addTag("role", role);
-          if (uid) await OneSignal.login(uid);
+    // init protegido contra doble-llamadas
+    let initialized = false;
 
-          const perm = await OneSignal.Notifications.requestPermission();
-          if (perm === "granted") {
-            out.innerHTML = "✅ Notificaciones activadas. Ya puedes cerrar esta pestaña.";
-            tellOk();
-          } else {
-            out.innerHTML = "ℹ️ No se otorgó permiso. Puedes intentarlo de nuevo.";
-          }
-        } catch (e) {
-          console.error(e);
-          out.innerHTML = "<span style='color:#b00'>"+ e + "</span>";
-        }
+    async function doInit(){
+      if (initialized) return;
+      initialized = true;
+
+      // Forzamos la ruta del SW para Chrome:
+      // Debe existir en /OneSignalSDKWorker.js (el server ya lo sirve).
+      await OneSignal.init({
+        appId: "{{ onesignal_app_id }}",
+        serviceWorkerPath: "/OneSignalSDKWorker.js",
+        // opcional: forzar scope raíz (no suele hacer falta, pero ayuda en hosting no-estático)
+        serviceWorkerParam: { scope: "/" }
       });
+    }
+
+    btn.addEventListener("click", async () => {
+      try {
+        log("Inicializando OneSignal…");
+        // Asegura init una sola vez
+        await doInit();
+
+        // Estado actual
+        const permission = await OneSignal.Notifications.permission;
+        if (permission === "denied") {
+          log("Notificaciones DENEGADAS por el navegador. En Chrome: haz clic en el candado de la barra de direcciones → Permisos → Notificaciones → Permitir y recarga.", true);
+          return;
+        }
+
+        // Pedir permiso con gesto de usuario
+        const result = await OneSignal.Notifications.requestPermission();
+        if (result === "granted") {
+          log("✅ Notificaciones activadas. Puedes cerrar esta pestaña.");
+          tellOk();
+        } else if (result === "denied") {
+          log("No se otorgó permiso. Puedes intentarlo de nuevo o cambiarlo en el candado de la barra de direcciones.", false);
+        } else {
+          // 'default' o algo inesperado
+          log("No se otorgó permiso. Puedes intentarlo de nuevo.", false);
+        }
+      } catch (e) {
+        console.error(e);
+        log("Error: " + (e && e.message ? e.message : e), true);
+      }
+    });
+
+    // opcional: si recargas y ya estaba activado, no intentes init doble
+    window.addEventListener("load", async () => {
+      try {
+        // Si ya hay permiso, marcamos ok y listo
+        const permission = await (navigator.permissions && navigator.permissions.query
+            ? (await navigator.permissions.query({name: "notifications"})).state
+            : (Notification && Notification.permission) );
+        if (permission === "granted") {
+          await doInit();
+          log("✅ Ya estaba activado.");
+          tellOk();
+        }
+      } catch {}
     });
   </script>
 </body>
