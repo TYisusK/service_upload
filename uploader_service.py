@@ -1,4 +1,4 @@
-# --- al inicio ---
+# upload_service.py
 import os
 import time
 import threading
@@ -6,7 +6,7 @@ from typing import Optional, Dict
 
 from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 import cloudinary
 import cloudinary.uploader
 
-# -------- .env ----------
+
+# -------------------- ENV --------------------
 load_dotenv()
 
 CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
@@ -22,18 +23,25 @@ API_KEY = os.getenv("CLOUDINARY_API_KEY")
 API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "mindfulpro")
 
-ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "4d37d5f3-d9ca-41f5-9db4-b0a9c57125fa")
+# OneSignal: usa tu App ID (puedes sobrescribir por env)
+ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "38ca55f0-f29d-413e-afe1-b25cc2bf9505")
 
 if not (CLOUD_NAME and API_KEY and API_SECRET):
-    raise RuntimeError("Faltan CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en el entorno.")
+    raise RuntimeError("Faltan CLOUDINARY_* en el entorno (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET).")
 
-cloudinary.config(cloud_name=CLOUD_NAME, api_key=API_KEY, api_secret=API_SECRET, secure=True)
+cloudinary.config(
+    cloud_name=CLOUD_NAME,
+    api_key=API_KEY,
+    api_secret=API_SECRET,
+    secure=True,
+)
 
+
+# -------------------- APP --------------------
 app = FastAPI(title="Mindful Service")
 templates = Jinja2Templates(directory="templates")
 
-
-# ---------- Headers para iframe embebido ----------
+# --- Middleware para permitir embeber en iframe (ajusta en prod) ---
 class FrameHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
@@ -43,37 +51,17 @@ class FrameHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(FrameHeadersMiddleware)
 
-# ---------- CORS ----------
+# --- CORS (ajústalo en producción a tus dominios) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ajusta en prod
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- Service Workers de OneSignal en la raíz ----------
-_OS_SW = "importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDKWorker.js');"
 
-@app.get("/OneSignalSDKWorker.js")
-def onesignal_sw_root():
-    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
-
-@app.get("/OneSignalSDKUpdaterWorker.js")
-def onesignal_sw_updater_root():
-    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
-
-# (opcional) si alguna vez quieres servirlos en /sw/ también:
-@app.get("/sw/OneSignalSDKWorker.js")
-def onesignal_sw_subpath():
-    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
-
-@app.get("/sw/OneSignalSDKUpdaterWorker.js")
-def onesignal_sw_updater_subpath():
-    return PlainTextResponse(_OS_SW, media_type="application/javascript; charset=utf-8")
-
-
-# ---------- Sesiones en memoria ----------
+# -------------------- SESIONES (para poll del uploader) --------------------
 _sessions: Dict[str, Dict] = {}
 _lock = threading.Lock()
 
@@ -92,27 +80,31 @@ def touch_session(session_id: str):
         _sessions.setdefault(session_id, {"ts": time.time()})
         _sessions[session_id]["ts"] = time.time()
 
-def janitor():
+def _janitor():
     while True:
         time.sleep(60)
-        cutoff = time.time() - 60*30
+        cutoff = time.time() - (60 * 30)
         with _lock:
             for k in list(_sessions.keys()):
                 if _sessions[k]["ts"] < cutoff:
                     del _sessions[k]
 
-threading.Thread(target=janitor, daemon=True).start()
+threading.Thread(target=_janitor, daemon=True).start()
 
 
-# ---------- Rutas básicas ----------
+# -------------------- RUTAS BÁSICAS --------------------
 @app.get("/health")
 def health():
     return {"ok": True}
 
 
-# ---------- Uploader ----------
+# -------------------- UPLOADER --------------------
 @app.get("/uploader", response_class=HTMLResponse)
 def uploader_form(request: Request, session: str, folder: str = "mindful/profesionistas"):
+    """
+    Página HTML para subir imagen; al terminar, guarda la URL en la sesión
+    para que el cliente haga poll a /poll.
+    """
     touch_session(session)
     return templates.TemplateResponse(
         "upload.html",
@@ -133,6 +125,9 @@ async def upload_image(
     public_id: Optional[str] = Form(default=None),
     overwrite: Optional[bool] = Form(default=True),
 ):
+    """
+    Endpoint JSON de subida. Si 'session' viene, guarda secure_url en la sesión.
+    """
     try:
         contents = await file.read()
         res = cloudinary.uploader.upload(
@@ -152,33 +147,36 @@ async def upload_image(
 
 @app.get("/poll")
 def poll(session: str):
+    """
+    Devuelve la URL subida (si ya está disponible) para esa sesión.
+    """
     url = session_get(session, "url")
     return {"ok": True, "url": url}
 
 
-# ---------- NOTIFICACIONES: OneSignal ----------
+# -------------------- NOTIFICACIONES (OneSignal v16) --------------------
 @app.get("/notify", response_class=HTMLResponse)
-def notify_page(request: Request, session: str, uid: Optional[str] = None, role: Optional[str] = None):
-    touch_session(session)
-    if not ONESIGNAL_APP_ID:
-        return HTMLResponse("<h3>Falta ONESIGNAL_APP_ID en el servidor.</h3>", status_code=500)
+def notify_page(request: Request):
+    """
+    Página súper simple para activar push (sin externalId, sin tags).
+    """
     return templates.TemplateResponse(
         "notify.html",
-        {
-            "request": request,
-            "onesignal_app_id": ONESIGNAL_APP_ID,
-            "session": session,
-            "uid": uid or "",
-            "role": role or "",
-        },
+        {"request": request, "onesignal_app_id": ONESIGNAL_APP_ID},
     )
 
-@app.post("/notify/ok")
-def notify_ok(session: str):
-    session_set(session, "push_ready", True)
-    return {"ok": True}
 
-@app.get("/notify/poll")
-def notify_poll(session: str):
-    ready = bool(session_get(session, "push_ready"))
-    return {"ok": True, "ready": ready}
+# -------------------- SERVICE WORKERS EN RAÍZ --------------------
+# Sirve los SW desde /OneSignalSDKWorker.js y /OneSignalSDKUpdaterWorker.js
+# Coloca los archivos en: static/OneSignalSDKWorker.js y static/OneSignalSDKUpdaterWorker.js
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+@app.get("/OneSignalSDKWorker.js")
+def onesignal_worker():
+    path = os.path.join(STATIC_DIR, "OneSignalSDKWorker.js")
+    return FileResponse(path, media_type="application/javascript")
+
+@app.get("/OneSignalSDKUpdaterWorker.js")
+def onesignal_worker_updater():
+    path = os.path.join(STATIC_DIR, "OneSignalSDKUpdaterWorker.js")
+    return FileResponse(path, media_type="application/javascript")
