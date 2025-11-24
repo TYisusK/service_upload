@@ -1,3 +1,4 @@
+# upload_service.py
 import os
 import time
 import threading
@@ -5,7 +6,7 @@ from typing import Optional, Dict
 
 from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
@@ -22,20 +23,16 @@ API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "mindfulpro")
 
 # OneSignal
-ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "4d37d5f3-d9ca-41f5-9db4-b0a9c57125fa")
+ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID")  # usa el que te funciona
 
 if not (CLOUD_NAME and API_KEY and API_SECRET):
     raise RuntimeError("Faltan CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en el entorno.")
 
-cloudinary.config(
-    cloud_name=CLOUD_NAME,
-    api_key=API_KEY,
-    api_secret=API_SECRET,
-    secure=True,
-)
+cloudinary.config(cloud_name=CLOUD_NAME, api_key=API_KEY, api_secret=API_SECRET, secure=True)
 
 app = FastAPI(title="Mindful Service")
 templates = Jinja2Templates(directory="templates")
+
 
 # ---------- Headers para iframe embebido ----------
 class FrameHeadersMiddleware(BaseHTTPMiddleware):
@@ -50,7 +47,7 @@ app.add_middleware(FrameHeadersMiddleware)
 # ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ajusta en prod a tu dominio de Flet/Render
+    allow_origins=["*"],  # ajusta en producción
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,18 +88,16 @@ threading.Thread(target=janitor, daemon=True).start()
 def health():
     return {"ok": True}
 
-# ---------- Servir los Service Workers en RAÍZ ----------
-SW_ROOT = os.path.dirname(os.path.abspath(__file__))
+# --------- (CRÍTICO) Service Worker en RAÍZ para Chrome ----------
+# OneSignal v16 espera que este archivo esté disponible en /OneSignalSDKWorker.js
+ONESIGNAL_SW_JS = "importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');"
 
-@app.get("/OneSignalSDKWorker.js", include_in_schema=False)
-def onesignal_sw():
-    path = os.path.join(SW_ROOT, "OneSignalSDKWorker.js")
-    return FileResponse(path, media_type="application/javascript")
-
-@app.get("/OneSignalSDKUpdaterWorker.js", include_in_schema=False)
-def onesignal_sw_updater():
-    path = os.path.join(SW_ROOT, "OneSignalSDKUpdaterWorker.js")
-    return FileResponse(path, media_type="application/javascript")
+@app.get("/OneSignalSDKWorker.js")
+def onesignal_worker_js():
+    # content-type correcto y sin caché agresiva mientras depuras
+    return Response(content=ONESIGNAL_SW_JS, media_type="application/javascript", headers={
+        "Cache-Control": "no-store"
+    })
 
 # ---------- Uploader ----------
 @app.get("/uploader", response_class=HTMLResponse)
@@ -149,9 +144,9 @@ def poll(session: str):
     url = session_get(session, "url")
     return {"ok": True, "url": url}
 
-# ---------- NOTIFICACIONES: OneSignal ----------
+# ---------- NOTIFICACIONES ----------
 @app.get("/notify", response_class=HTMLResponse)
-def notify_page(request: Request, session: str, uid: Optional[str] = None, role: Optional[str] = None):
+def notify_page(request: Request, session: str):
     if not ONESIGNAL_APP_ID:
         return HTMLResponse("<h3>Falta ONESIGNAL_APP_ID en el servidor.</h3>", status_code=500)
 
@@ -162,8 +157,6 @@ def notify_page(request: Request, session: str, uid: Optional[str] = None, role:
             "request": request,
             "onesignal_app_id": ONESIGNAL_APP_ID,
             "session": session,
-            "uid": uid or "",
-            "role": role or "",
         },
     )
 
