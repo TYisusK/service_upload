@@ -1,77 +1,88 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Activar notificaciones</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue";
-         background:#f6f3ff;margin:0;padding:24px;display:flex;justify-content:center}
-    .card{background:#fff;max-width:520px;width:100%;border-radius:16px;padding:18px 18px 22px;
-          box-shadow:0 12px 40px rgba(0,0,0,.08)}
-    h1{font-size:18px;margin:0 0 8px}
-    .muted{color:#666;font-size:13px;margin-bottom:12px}
-    button{background:#6d5bd0;color:#fff;padding:10px 14px;border:0;border-radius:10px;cursor:pointer}
-    .out{margin-top:14px;font-size:13px;word-break:break-all}
-  </style>
+<!-- OneSignal SDK v16 -->
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 
-  <!-- OneSignal SDK v16 -->
-  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
-</head>
-<body>
-  <div class="card">
-    <h1>Activar notificaciones</h1>
-    <div class="muted">Da permiso para recibir recordatorios y avisos importantes.</div>
-    <button id="btn">Activar</button>
-    <div class="out" id="out"></div>
-  </div>
+<script>
+  const params  = new URLSearchParams(location.search);
+  const session = params.get("session") || "";
+  const out     = document.getElementById("out");
+  const btn     = document.getElementById("btn");
 
-  <script>
-    const btn = document.getElementById("btn");
-    const out = document.getElementById("out");
+  // evita re-inicializar si el usuario vuelve a hacer clic
+  window.__onesignal_init = window.__onesignal_init || false;
 
-    function setMsg(html){ out.innerHTML = html; }
+  // helper: avisar al backend que quedó listo
+  function tellOk() {
+    if (!session) return;
+    fetch(`/notify/ok?session=${encodeURIComponent(session)}`, { method: "POST" }).catch(()=>{});
+  }
 
-    // Evitar "SDK already initialized"
-    let initialized = false;
+  // registra el SW desde la raíz (asegúrate de que el backend sirva /OneSignalSDKWorker.js)
+  async function registerSW() {
+    if (!("serviceWorker" in navigator)) return;
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      // si ya hay uno de OneSignal, úsalo; si no, regístralo
+      const hasOSW = regs.some(r => r.active && /OneSignalSDK/i.test(r.active.scriptURL));
+      if (!hasOSW) {
+        await navigator.serviceWorker.register("/OneSignalSDKWorker.js", { scope: "/" });
+      }
+    } catch (e) {
+      console.warn("SW register warn:", e);
+    }
+  }
+
+  btn.addEventListener("click", () => {
+    out.textContent = "Inicializando OneSignal…";
 
     window.OneSignalDeferred = window.OneSignalDeferred || [];
-    btn.addEventListener("click", () => {
-      if (initialized) {
-        setMsg("Ya estaba activo ✅");
-        return;
-      }
-      setMsg("Inicializando OneSignal…");
-
-      OneSignalDeferred.push(async function(OneSignal) {
-        try {
-          // Chequeo de estado para no re-inicializar
-          const state = await OneSignal.User.pushSubscription.optedIn;
-          if (state) {
-            initialized = true;
-            setMsg("Ya tenías notificaciones activadas ✅");
-            return;
-          }
+    window.OneSignalDeferred.push(async function(OneSignal) {
+      try {
+        if (!window.__onesignal_init) {
+          await registerSW();
 
           await OneSignal.init({
             appId: "{{ onesignal_app_id }}",
+            // Si usas un sub-path, ajusta:
+            // serviceWorkerParam: { path: "/OneSignalSDKWorker.js", scope: "/" }
           });
 
-          // Pide permiso
-          const perm = await OneSignal.Notifications.requestPermission();
-          if (perm === "granted") {
-            initialized = true;
-            btn.disabled = true;
-            setMsg("✅ Notificaciones activadas. ¡Listo!");
-          } else {
-            setMsg("ℹ️ No se otorgó permiso. Inténtalo de nuevo.");
-          }
-        } catch (e) {
-          console.error(e);
-          setMsg("<span style='color:#b00'>Error: " + (e?.message || e) + "</span>");
+          window.__onesignal_init = true;
         }
-      });
+
+        // pedir permiso (esto NO toca User.PushSubscription)
+        const perm = await OneSignal.Notifications.requestPermission();
+        if (perm === "granted") {
+          out.innerHTML = "✅ Notificaciones activadas. Puedes cerrar esta pestaña.";
+          tellOk();
+          return;
+        }
+        if (perm === "denied") {
+          out.innerHTML = "❗ Has bloqueado las notificaciones en el navegador. Habilítalas en los permisos del sitio y vuelve a intentar.";
+          return;
+        }
+        // "default" (ni aceptó ni negó)
+        out.innerHTML = "ℹ️ No se otorgó permiso. Puedes intentarlo de nuevo.";
+      } catch (e) {
+        // cuando se clickea dos veces suele lanzar “initAlreadyCalled”
+        const msg = (e && (e.message || e.toString())) || "Error";
+        if (/already/i.test(msg)) {
+          out.textContent = "SDK ya inicializado. Intentando pedir permiso…";
+          try {
+            const perm = await OneSignal.Notifications.requestPermission();
+            if (perm === "granted") {
+              out.innerHTML = "✅ Notificaciones activadas. Puedes cerrar esta pestaña.";
+              tellOk();
+              return;
+            }
+            out.innerHTML = "ℹ️ No se otorgó permiso. Puedes intentarlo de nuevo.";
+            return;
+          } catch (e2) {
+            out.innerHTML = "Error: " + (e2.message || e2.toString());
+            return;
+          }
+        }
+        out.innerHTML = "Error: " + msg;
+      }
     });
-  </script>
-</body>
-</html>
+  });
+</script>
