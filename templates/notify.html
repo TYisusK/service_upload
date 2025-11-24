@@ -7,7 +7,7 @@
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue";
          background:#f6f3ff; margin:0; padding:24px; display:flex; justify-content:center}
-    .card{background:#fff; max-width:560px; width:100%; border-radius:16px; padding:18px 18px 22px;
+    .card{background:#fff; max-width:520px; width:100%; border-radius:16px; padding:18px 18px 22px;
           box-shadow:0 12px 40px rgba(0,0,0,.08)}
     h1{font-size:18px; margin:0 0 8px}
     .muted{color:#666; font-size:13px; margin-bottom:12px}
@@ -40,64 +40,31 @@
       fetch(`/notify/ok?session=${encodeURIComponent(session)}`, {method:"POST"});
     }
 
-    // banderita para no re-inicializar
-    window.__osInited = window.__osInited || false;
-
-    async function initAndSubscribe(OneSignal) {
-      if (!window.__osInited) {
-        try {
-          await OneSignal.init({
-            appId: "{{ onesignal_app_id }}",
-            allowLocalhostAsSecureOrigin: true,
-            // Si sirves los SW en /sw/, descomenta:
-            // serviceWorkerParam: { scope: "/" }, // el SW está en raíz en este servicio
-          });
-          window.__osInited = true;
-        } catch (e) {
-          // Ignorar si ya está inicializado
-          if (String(e).includes("already initialized")) {
-            window.__osInited = true;
-          } else {
-            throw e;
-          }
-        }
-      }
-
-      // tags útiles
-      if (role) {
-        try { await OneSignal.User.addTag("role", role); } catch {}
-      }
-      if (uid) {
-        // external id
-        try { await OneSignal.login(uid); } catch {}
-      }
-
-      // pedir permiso + suscripción explícita
-      try {
-        const perm = await OneSignal.Notifications.requestPermission();
-        if (perm !== "granted") {
-          out.innerHTML = "ℹ️ No se otorgó permiso. Puedes intentarlo de nuevo.";
-          return;
-        }
-        // Asegurar que haya subscription creada
-        await OneSignal.Notifications.subscribe();
-        const isSub = await OneSignal.Notifications.isSubscribed();
-        if (isSub) {
-          out.innerHTML = "✅ Notificaciones activadas. Puedes cerrar esta pestaña.";
-          tellOk();
-        } else {
-          out.innerHTML = "⚠️ No fue posible completar la suscripción. Reintenta.";
-        }
-      } catch (e) {
-        console.error(e);
-        out.innerHTML = "<span style='color:#b00'>Error: "+ e + "</span>";
-      }
-    }
-
     window.OneSignalDeferred = window.OneSignalDeferred || [];
     btn.addEventListener("click", () => {
       out.textContent = "Inicializando OneSignal…";
-      OneSignalDeferred.push(initAndSubscribe);
+      OneSignalDeferred.push(async function(OneSignal) {
+        try {
+          await OneSignal.init({
+            appId: "{{ onesignal_app_id }}"
+            // No hace falta serviceWorkerParam si los .js están en raíz
+          });
+
+          if (role) await OneSignal.User.addTag("role", role);
+          if (uid) await OneSignal.login(uid);
+
+          const perm = await OneSignal.Notifications.requestPermission();
+          if (perm === "granted") {
+            out.innerHTML = "✅ Notificaciones activadas. Ya puedes cerrar esta pestaña.";
+            tellOk();
+          } else {
+            out.innerHTML = "ℹ️ No se otorgó permiso. Puedes intentarlo de nuevo.";
+          }
+        } catch (e) {
+          console.error(e);
+          out.innerHTML = "<span style='color:#b00'>"+ e + "</span>";
+        }
+      });
     });
   </script>
 </body>
